@@ -26,7 +26,8 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 import bcrypt
 import jwt
-
+from flask_mail import Mail, Message
+import stripe
 
 # connect to create SQLite database and tables
 
@@ -1085,13 +1086,69 @@ class UserDictionary:
 
     def get_dictionary(self):
         return self.dictionary
+    #-
 
-app = Flask(__name__)
+    
+app = Flask(__name__)   
+# Configure Flask-Mail
+app.config['MAIL_SERVER'] = 'smtp.example.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = 'your_email@example.com'
+app.config['MAIL_PASSWORD'] = 'your_email_password'
+app.config['MAIL_DEFAULT_SENDER'] = 'your_email@example.com'
+mail = Mail(app)
+
 app.config['SQLALCHEMY_DATABASE_URI'] = f'mysql://desktop_black.lan:{os.environ.get("api")}@192.168.1.236:port/omniiflask'
 db = SQLAlchemy(app)
 
+app.config['STRIPE_PUBLIC_KEY'] = os.environ.get("stripePubKey")
+app.config['STRIPE_SECRET_KEY'] = os.environ.get("stripeSecretKey")
 
-# Dummy API key for demonstration purposes
+
+@app.route('/stripe/webhook', methods=['POST'])
+def stripe_webhook():
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, app.config['STRIPE_WEBHOOK_SECRET']
+        )
+    except ValueError as e:
+        # Invalid payload
+        return 'Invalid payload', 400
+    except stripe.error.SignatureVerificationError as e:
+        # Invalid signature
+        return 'Invalid signature', 400
+
+    # Handle the event
+    if event['type'] == 'payment_intent.succeeded':
+        payment_intent = event['data']['object']
+        email = payment_intent['receipt_email']
+        handle_payment_success(payment_intent, email)
+    elif event['type'] == 'payment_intent.failed':
+        # Payment failed, handle accordingly
+        handle_payment_failure(event['data']['object'])
+
+    return jsonify({'status': 'success'})
+
+def handle_payment_success(payment_intent):
+    send_prepurchase_email()
+    pass
+
+def handle_payment_failure(payment_intent):
+    # Handle failed payment
+    pass
+
+# Function to send purchase email
+def send_prepurchase_email(customer_email, amount):
+    msg = Message('Thank you for your purchase!', recipients=[customer_email])
+    msg.body = f'Your purchase of ${amount/100:.2f} was successful. Thank you for shopping with us! You will recieved another email with the product on launch day or early release! Keep an eye out! '
+    mail.send(msg)
+
+
+
 API_KEY = os.environ.get('api')
 
 # Decorator to require API key
@@ -1116,6 +1173,7 @@ def get_resource():
     return jsonify(dictionary)
 
 
+
 # Define User and APICredential models
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -1133,7 +1191,7 @@ class APICredential(db.Model):
     
 # Instantiate HashPassword outside of route functions
 # Secret key for encoding/decoding JWT tokens
-SECRET_KEY = 'your_secret_key_here'
+SECRET_KEY = os.environ.get("secretkey")
 
 def generate_jwt_token(user_id):
     # Set token expiration time (e.g., 1 hour from now)
